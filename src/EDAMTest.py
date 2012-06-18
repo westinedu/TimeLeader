@@ -1,0 +1,179 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+#
+# A simple Evernote API demo application that authenticates with the
+# Evernote web service, lists all notebooks in the user's account,
+# and creates a simple test note in the default notebook.
+#
+# Before running this sample, you must change the API consumer key
+# and consumer secret to the values that you received from Evernote.
+#
+# To run (Unix):
+#   export PYTHONPATH=../../lib/python; python EDAMTest.py myuser mypass
+#
+
+import sys
+import hashlib
+import binascii
+import time
+import chardet
+import codecs
+from time import strftime
+#import pytz
+import datetime
+import csv
+import thrift.protocol.TBinaryProtocol as TBinaryProtocol
+import thrift.transport.THttpClient as THttpClient
+import evernote.edam.userstore.UserStore as UserStore
+import evernote.edam.userstore.constants as UserStoreConstants
+import evernote.edam.notestore.NoteStore as NoteStore
+import evernote.edam.type.ttypes as Types
+import evernote.edam.notestore.ttypes as NoteStoreTypes
+import evernote.edam.error.ttypes as Errors
+
+if len(sys.argv) < 3:
+    print "Arguments:  <username> <password>";
+    exit(1)
+
+username = sys.argv[1]
+password = sys.argv[2]
+
+#
+# NOTE: You must change the consumer key and consumer secret to the 
+#       key and secret that you received from Evernote
+#
+consumerKey = "westine"
+consumerSecret = "277e8b3a8cc49b2d"
+
+evernoteHost = "www.evernote.com" #this is production service
+userStoreUri = "https://" + evernoteHost + "/edam/user"
+noteStoreUriBase = "https://" + evernoteHost + "/edam/note/"
+
+userStoreHttpClient = THttpClient.THttpClient(userStoreUri)
+userStoreProtocol = TBinaryProtocol.TBinaryProtocol(userStoreHttpClient)
+userStore = UserStore.Client(userStoreProtocol)
+
+versionOK = userStore.checkVersion("Python EDAMTest",
+                                   UserStoreConstants.EDAM_VERSION_MAJOR,
+                                   UserStoreConstants.EDAM_VERSION_MINOR)
+
+print "Is my EDAM protocol version up to date? ", str(versionOK)
+print ""
+if not versionOK:
+    exit(1)
+
+# Authenticate the user
+try :
+    authResult = userStore.authenticate(username, password,
+                                        consumerKey, consumerSecret)
+except Errors.EDAMUserException,e:
+    # See http://www.evernote.com/about/developer/api/ref/UserStore.html#Fn_UserStore_authenticate
+    parameter = e.parameter
+    errorCode = e.errorCode
+    errorText = Errors.EDAMErrorCode._VALUES_TO_NAMES[errorCode]
+    
+    print "Authentication failed (parameter: " + parameter + " errorCode: " + errorText + ")"
+    
+    if errorCode == Errors.EDAMErrorCode.INVALID_AUTH:
+        if parameter == "consumerKey":
+            if consumerKey == "en-edamtest":
+                print "You must replace the variables consumerKey and consumerSecret with the values you received from Evernote."
+            else:
+                print "Your consumer key was not accepted by", evernoteHost
+                print "This sample client application requires a client API key. If you requested a web service API key, you must authenticate using OAuth."
+            print "If you do not have an API Key from Evernote, you can request one from http://www.evernote.com/about/developer/api"
+        elif parameter == "username":
+            print "You must authenticate using a username and password from", evernoteHost
+            if evernoteHost != "www.evernote.com":
+                print "Note that your production Evernote account will not work on", evernoteHost
+                print "You must register for a separate test account at https://" + evernoteHost + "/Registration.action"
+        elif parameter == "password":
+            print "The password that you entered is incorrect"
+
+    print ""
+    exit(1)
+
+user = authResult.user
+authToken = authResult.authenticationToken
+print "Authentication was successful for ", user.username
+print "Authentication token = ", authToken
+
+noteStoreUri =  noteStoreUriBase + user.shardId
+noteStoreHttpClient = THttpClient.THttpClient(noteStoreUri)
+noteStoreProtocol = TBinaryProtocol.TBinaryProtocol(noteStoreHttpClient)
+noteStore = NoteStore.Client(noteStoreProtocol)
+
+notebooks = noteStore.listNotebooks(authToken)
+print "Found ", len(notebooks), " notebooks:"
+ofile  = codecs.open('ttest.html','w','utf-8')
+
+for notebook in notebooks:
+    print "  * ", notebook.name
+    
+    if notebook.defaultNotebook:
+        defaultNotebook = notebook
+  #  else :
+  #      continue
+    filter = NoteStoreTypes.NoteFilter()
+    filter.notebookGuid = notebook.guid
+    filter.order = 1
+    filter.words = "todo:*";
+    filter.ascending = False
+    filter.timeZone = "Asia/Shanghai"
+    noteList = noteStore.findNotes(authToken, filter, 0, 100)
+    print "total notes number :" + str(noteList.totalNotes) 
+    print "startIndex"  + str(noteList.startIndex)
+    print len(noteList.notes)
+    for note in noteList.notes:
+      #print note.guid  
+      #print note.title
+      print chardet.detect(note.title)
+      ofile.write(note.title+'\n')
+      noteContent = noteStore.getNoteContent(authToken, note.guid)
+      print noteContent
+      print chardet.detect(note.title)
+      ofile.write(noteContent+'\n')
+      print note.created
+      #print str(note.created)[:-3]
+      #print note.updated
+      utc = datetime.datetime.utcfromtimestamp(note.created/1000);
+      format =  "%a %e %b %Y %r %Z"
+      print utc.strftime("%Y-%m-%d %H:%M:%S")
+      print sys.getdefaultencoding()
+      #print note.contentLength
+print
+print "Creating a new note in default notebook: ", defaultNotebook.name
+print
+
+# Create a note with one image resource in it ...
+
+image = open('enlogo.png', 'rb').read()
+md5 = hashlib.md5()
+md5.update(image)
+hash = md5.digest()
+hashHex = binascii.hexlify(hash)
+
+data = Types.Data()
+data.size = len(image)
+data.bodyHash = hash
+data.body = image
+
+resource = Types.Resource()
+resource.mime = 'image/png'
+resource.data = data
+
+note = Types.Note()
+note.title = "Test note from EDAMTest.py"
+note.content = '<?xml version="1.0" encoding="UTF-8"?>'
+note.content += '<!DOCTYPE en-note SYSTEM "http://xml.evernote.com/pub/enml2.dtd">'
+note.content += '<en-note>Here is the Evernote logo:<br/>'
+note.content += '<en-media type="image/png" hash="' + hashHex + '"/>'
+note.content += '<en-todo checked="true"></en-todo>'
+note.content += '</en-note>'
+note.resources = [ resource ]
+
+createdNote = noteStore.createNote(authToken, note)
+
+print "Successfully created a new note with GUID: ", createdNote.guid
+
+
